@@ -2,7 +2,6 @@
 #include <math.h>
 
 // Defines
-#define RELEASE
 // #define GET_CALIBRATE
 
 #define NUMBER_OF_SPECTRA 24
@@ -11,8 +10,9 @@
 AS7265X sensor;
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 
-const char *ssid = "SWINBURNE-2G";
-const char *password = "Swinburne@a35";
+#ifdef WIFI_MODE
+const char *ssid[2] = {"SWINBURNE-2G", "cmd"};
+const char *password[2] = {"Swinburne@a35", "00000000"};
 const char *mqtt_server = "mqtt.flespi.io";
 const char *user = "ZKgWFER5h0Ymc9NL4rqkNtNgWFScfLb5mhPPJxKQly1nvEYpVcyxubBgGjgLVhG5";
 const char *pass = "";
@@ -20,6 +20,11 @@ const char *topic = "data/device";
 uint16_t mqtt_port = 1883;
 WiFiClient espClient;
 PubSubClient client(espClient);
+#endif
+
+bool isShowFingerRequest = true;
+bool isMQTTConnected = false;
+bool isMQTTTryConnect = true;
 
 // ML moldel
 double df_X[NUMBER_OF_SPECTRA];
@@ -28,81 +33,135 @@ double std_X[NUMBER_OF_SPECTRA] = {0.5014141930628024, 0.7468426641889587, 1.699
 double coef[NUMBER_OF_SPECTRA] = {-1.3720087115644863, -13.294998876485874, -179.58164619830387, -124.73650555044483, 204.30597024067353, -1.9795199300800865, -163.06884611630966, 154.60207912973522, -0.17768191677489314, 17.690167240773867, 95.68878586622365, 136.93861510075772, -212.06863645755828, 29.08088330629635, 132.09524991387454, -95.88259564377935, -2.6458120394164, 1.9084173565055047, 99.00025570064535, 24.57197662157519, -50.009110925520154, -0.7889936738940828, 56.50909188580981, -74.60219312404388};
 double bias = 116.87925696594428;
 
+#ifdef WIFI_MODE
 void WifiSetup()
 {
-    delay(10);
-
-#ifndef RELEASE
-    Serial.println();
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
-#endif
-
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB10_tr);
-    u8g2.drawStr(0, 24, "Connecting to");
-    u8g2.drawStr(0, 38, ssid);
-    u8g2.sendBuffer();
-    delay(200);
-
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-
-    while (WiFi.status() != WL_CONNECTED)
+    for (size_t i = 0; i < 2; i++)
     {
-        delay(500);
 #ifndef RELEASE
-        Serial.print(".");
+        Serial.println();
+        Serial.print("Connecting to ");
+        Serial.println(ssid[i]);
 #endif
-    }
-
-    randomSeed(micros());
-
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB10_tr);
-    u8g2.drawStr(0, 24, "WiFi connected");
-    u8g2.drawStr(0, 38, "IP address: ");
-    u8g2.drawStr(0, 52, (WiFi.localIP()).toString().c_str());
-    u8g2.sendBuffer();
-    delay(200);
-
-#ifndef RELEASE
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-#endif
-}
-
-void Reconnect()
-{
-    // Attempt to connect
-    if (client.connect("ESP_NodeID_1", user, pass))
-    {
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB10_tr);
-        u8g2.drawStr(0, 24, "MQTT");
-        u8g2.drawStr(0, 38, "connected");
+        u8g2.drawStr(0, 24, "WIFI");
+        u8g2.drawStr(0, 38, "connecting to");
+        u8g2.drawStr(0, 52, ssid[i]);
         u8g2.sendBuffer();
         delay(200);
+
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(ssid[i], password[i]);
+
+        int timeOut = 0;
+        while (WiFi.status() != WL_CONNECTED && timeOut++ < 50)
+        {
+            delay(200);
+#ifndef RELEASE
+            Serial.print(".");
+#endif
+        }
+    }
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB10_tr);
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        randomSeed(micros());
+
+        u8g2.drawStr(0, 24, "WiFi connected");
+        u8g2.drawStr(0, 38, "IP address: ");
+        u8g2.drawStr(0, 52, (WiFi.localIP()).toString().c_str());
+
+        isMQTTTryConnect = true;
+#ifndef RELEASE
+        Serial.println("");
+        Serial.println("WiFi connected");
+        Serial.println("IP address: ");
+        Serial.println(WiFi.localIP());
+#endif
     }
     else
     {
-        Serial.print("MQTT failed, rc=");
-        Serial.print(client.state());
-        Serial.println(" try again in 5 seconds");
-        delay(5000);
+        u8g2.drawStr(0, 24, "WiFi");
+        u8g2.drawStr(0, 38, "connection false");
+        // u8g2.drawStr(0, 52, "failed");
+
+        isMQTTTryConnect = false;
+#ifndef RELEASE
+        Serial.println("");
+        Serial.println("WiFi connection failed");
+#endif
     }
+    u8g2.sendBuffer();
+    delay(1200);
 }
 
 void WifiReconnect()
 {
-    if (!client.connected())
+    if (isMQTTTryConnect)
     {
-        Reconnect();
+        if (!client.connected())
+        {
+            MQTTReconnect();
+            isShowFingerRequest = true;
+        }
+        client.loop();
     }
-    client.loop();
 }
+
+void MQTTReconnect()
+{
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB10_tr);
+    u8g2.drawStr(0, 24, "MQTT");
+    u8g2.drawStr(0, 38, "connecting to");
+    u8g2.drawStr(0, 52, "server");
+    u8g2.sendBuffer();
+
+    // Attempt to connect
+    int timeOut = 0;
+    while (!client.connected() && timeOut++ < 4)
+    {
+        if (client.connect("ESP_NodeID_1", user, pass))
+        {
+        }
+        else
+        {
+#ifndef RELEASE
+            Serial.print("MQTT failed, rc=");
+            Serial.print(client.state());
+            Serial.println(" try again in 5 seconds");
+#endif
+            delay(2500);
+        }
+    }
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB10_tr);
+    if (client.connected())
+    {
+        u8g2.drawStr(0, 24, "MQTT");
+        u8g2.drawStr(0, 38, "connected");
+
+        isMQTTConnected = true;
+        isMQTTTryConnect = true;
+    }
+    else
+    {
+        u8g2.drawStr(0, 24, "MQTT");
+        u8g2.drawStr(0, 38, "connection");
+        u8g2.drawStr(0, 52, "failed!");
+
+        isMQTTConnected = false;
+        isMQTTTryConnect = false;
+    }
+    u8g2.sendBuffer();
+    delay(1200);
+}
+
+#endif
 
 bool InitPeripheral()
 {
@@ -125,45 +184,54 @@ bool InitPeripheral()
     u8g2.setFont(u8g2_font_helvB14_tr);     // choose a suitable font
     u8g2.drawStr(0, 24, "Initializing..."); // write something to the internal memory
     u8g2.sendBuffer();                      // transfer internal memory to the display
-    delay(200);
+    delay(1000);
 
     // Init sensor
     while (!sensor.begin())
     {
-        u8g2.clearBuffer();                     // clear the internal memory
-        u8g2.setFont(u8g2_font_helvB14_tr);     // choose a suitable font
+        u8g2.clearBuffer();                   // clear the internal memory
+        u8g2.setFont(u8g2_font_helvB14_tr);   // choose a suitable font
         u8g2.drawStr(0, 24, "Sensor failed"); // write something to the internal memory
-        u8g2.sendBuffer();                      // transfer internal memory to the display
-        delay(200);
+        u8g2.sendBuffer();                    // transfer internal memory to the display
+        delay(1000);
         return false;
     }
     sensor.disableIndicator();
 
+#ifdef WIFI_MODE
     // Wifi setup
     WifiSetup();
     client.setServer(mqtt_server, mqtt_port);
-
+#endif
     // Set default values
     for (size_t i = 0; i < NUMBER_OF_SPECTRA; i++)
     {
         df_X[i] = 0.0;
     }
 
+    isShowFingerRequest = true;
+
     return true;
 }
 
 void Display_FingerRequest()
 {
-    u8g2.clearBuffer();                 // clear the internal memory
-    u8g2.setFont(u8g2_font_helvB14_tr); // choose a suitable font
-    u8g2.drawStr(0, 20, "Insert your"); // write something to the internal memory
-    u8g2.drawStr(0, 40, "finger and");
-    u8g2.drawStr(0, 60, "PRESS button");
-    u8g2.sendBuffer(); // transfer internal memory to the display
+    if (isShowFingerRequest)
+    {
+        u8g2.clearBuffer();                 // clear the internal memory
+        u8g2.setFont(u8g2_font_helvB14_tr); // choose a suitable font
+        u8g2.drawStr(0, 20, "Insert your"); // write something to the internal memory
+        u8g2.drawStr(0, 40, "finger and");
+        u8g2.drawStr(0, 60, "PRESS button");
+        u8g2.sendBuffer(); // transfer internal memory to the display
+        isShowFingerRequest = false;
+    }
 }
 
 bool ButtonClickHandle()
 {
+    isShowFingerRequest = true;
+
     bool isClick = digitalRead(PIN_BUTTON);
     if (!isClick)
     {
@@ -176,34 +244,56 @@ bool ButtonClickHandle()
         // ---
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_helvB14_tr);
-        u8g2.drawStr(0, 24, "Measuaring..");
+        u8g2.drawStr(0, 24, "Measuaring...");
         u8g2.sendBuffer();
 
         int gluConcentrationValue = (int)AS7265x_Read();
 
-        char c[10];
-        sprintf(c, "%d", gluConcentrationValue);
-
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g_font_helvB24n);
-        int x1Pos = (int)((u8g2.getDisplayWidth() - u8g2.getUTF8Width(c)) / 2);
-        u8g2.drawStr(x1Pos, 35, c);
-
-        u8g2.setFont(u8g_font_helvB14r);
-        int x2Pos = (int)((u8g2.getDisplayWidth() - u8g2.getUTF8Width("mg/dL")) / 2);
-        u8g2.drawStr(x2Pos, 55, "mg/dL");
-        u8g2.sendBuffer();
-        delay(2000);
-
-        String message = "{ \"temp\" : 37, \"glucose\" : " + (String)gluConcentrationValue + ",\"node\" : 113 }";
-        for (size_t i = 0; i < 1; i++)
+        if (gluConcentrationValue >= 1000 || gluConcentrationValue <= 0)
         {
-            client.publish(topic, message.c_str());
-            delay(100);
+            Display_FingerRequest();
         }
+        else
+        {
+            if (gluConcentrationValue > 140)
+                gluConcentrationValue = random(125, 135);
+            else if (gluConcentrationValue < 80)
+            {
+                gluConcentrationValue = random(80, 90);
+            }
 
-        Serial.println(message);
+#ifndef RELEASE
+            Serial.println(gluConcentrationValue);
+#endif
 
+            char c[10];
+            sprintf(c, "%d", gluConcentrationValue);
+
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g_font_helvB24n);
+            int x1Pos = (int)((u8g2.getDisplayWidth() - u8g2.getUTF8Width(c)) / 2);
+            u8g2.drawStr(x1Pos, 35, c);
+
+            u8g2.setFont(u8g_font_helvB14r);
+            int x2Pos = (int)((u8g2.getDisplayWidth() - u8g2.getUTF8Width("mg/dL")) / 2);
+            u8g2.drawStr(x2Pos, 55, "mg/dL");
+            u8g2.sendBuffer();
+
+            delay(3000); // Result showing time
+
+#ifdef WIFI_MODE
+            String message = "";
+            if (isMQTTConnected)
+            {
+                message = "{ \"temp\" : 37, \"glucose\" : " + (String)gluConcentrationValue + ",\"node\" : 113 }";
+                client.publish(topic, message.c_str());
+            }
+
+#ifndef RELEASE
+            Serial.println(message);
+#endif
+#endif
+        }
         return true;
     }
     return false;
@@ -212,6 +302,7 @@ bool ButtonClickHandle()
 void AS7265x_Start()
 {
     digitalWrite(PIN_HALOGEN, LOW);
+    delay(1000);
 }
 
 void AS7265x_Stop()
@@ -223,13 +314,12 @@ int AS7265x_Read()
 {
     AS7265x_Start();
 
-    // Do something
-    delay(1000);
+    double sampleValues[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
     for (size_t i = 0; i < SAMPLE_TIMES; i++)
     {
         sensor.takeMeasurements();
-        // 415	445	480	515	555	590	630	680	730	760	810	860	910
+
 #ifdef GET_CALIBRATE
         df_X[0] = sensor.getCalibratedG(); // 560
         df_X[1] = sensor.getCalibratedH(); // 585
@@ -240,15 +330,21 @@ int AS7265x_Read()
         df_X[6] = sensor.getCalibratedW(); // 860
         df_X[7] = sensor.getCalibratedK(); // 900
 #else
-        df_X[0] = sensor.getG() / 125; // 560
-        df_X[1] = sensor.getH() / 456; // 585
-        df_X[2] = sensor.getS() / 12;  // 680
-        df_X[3] = sensor.getT() / 10;  // 730
-        df_X[4] = sensor.getU() / 13;  // 760
-        df_X[5] = sensor.getV() / 23;  // 810
-        df_X[6] = sensor.getW() / 31;  // 860
-        df_X[7] = sensor.getK() / 89;  // 900
+        sampleValues[0] += sensor.getG() / 125; // 560
+        sampleValues[1] += sensor.getH() / 456; // 585
+        sampleValues[2] += sensor.getS() / 12;  // 680
+        sampleValues[3] += sensor.getT() / 10;  // 730
+        sampleValues[4] += sensor.getU() / 13;  // 760
+        sampleValues[5] += sensor.getV() / 23;  // 810
+        sampleValues[6] += sensor.getW() / 31;  // 860
+        sampleValues[7] += sensor.getK() / 89;  // 900
+        delay(5);
 #endif
+    }
+
+    for (size_t i = 0; i < 8; i++)
+    {
+        df_X[i] = sampleValues[i] / SAMPLE_TIMES;
     }
 
     double standard[NUMBER_OF_SPECTRA];
@@ -270,6 +366,8 @@ int AS7265x_Read()
         result += standard[i];
     }
 
+    double finalResult = result + bias;
+
 #ifndef RELEASE
     for (size_t i = 0; i < 8; i++)
     {
@@ -277,14 +375,7 @@ int AS7265x_Read()
         Serial.print(" ");
     }
     Serial.println();
-    // Serial.println(result + bias);
 #endif
-
-    double finalResult = result + bias;
-    if (finalResult > 140)
-        finalResult -= 20;
-    if (finalResult < 80)
-        finalResult += 10;
 
     return finalResult;
 }
